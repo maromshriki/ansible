@@ -1,0 +1,15 @@
+plugin: amazon.aws.aws_ec2
+regions:
+  - us-east-1
+
+filters:
+  tag:Managed: "true"
+  tag:Name: [nginx-marom-test-aws-06 ,mariadb-test-aws-marom-01]
+
+keyed_groups:
+  - prefix: tag
+    key: tags.Name
+
+
+strict: False
+

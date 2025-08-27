@@ -1,46 +1,80 @@
 ---
-- name: update yum
+- name: Update all packages
   hosts: all
   become: yes
   tasks:
-    - name: update
+    - name: Update all installed packages to latest version
       yum:
         name: '*'
         state: latest
-        update_cache: yes
 
-- name: Install mysql
-  hosts: tag_Service_mysql
+- name: Configure EC2 instance based on tags
+  hosts: all
   become: yes
+  gather_facts: true
+
   tasks:
-    - name: Download MySQL APT repository configuration package
-      nsible.builtin.get_url:
-        url: https://dev.mysql.com/get/mysql-apt-config_0.8.12-1_all.deb
-        dest: /tmp/mysql-apt-config_0.8.12-1_all.deb
+    - name: Get EC2 metadata facts
+      amazon.aws.ec2_metadata_facts:
 
-    - name: Install MySQL APT repository configuration package
-      yum:
-        deb: /tmp/mysql-apt-config_0.8.12-1_all.deb
-      register: mysql_repo_install    
+    - name: Fail if host is not managed
+      fail:
+        msg: "This host is not managed."
+      when: (hostvars[inventory_hostname]['tags']['Managed'] | default('false') | lower) != 'true'
 
-    - name: install mysql5.7
-      yum:
-        name:
-          - mysql-server-5.7
-          - mysql-client-5.7
-          - python-mysqldb 
+    - name: Set hostname to tag Name
+      hostname:
+        name: "{{ hostvars[inventory_hostname]['tags']['Name'] }}"
+
+    - name: Ensure cronie is installed
+      package:
+        name: cronie
         state: present
 
-- name: install Ngnix
-  hosts: tag_Service_ngnix
-  tasks:
-    - name: Install Nginx
-      yum:
-        name: nginx=1.17
+    - name: Install service from tag
+      package:
+        name: "{{ hostvars[inventory_hostname]['tags']['Service'] }}-{{ hostvars[inventory_hostname]['tags']['Version']}}"
         state: present
 
-    - name: Start and enable Nginx service
-      ansible.builtin.service:
-        name: nginx
+    - name: Downgrade service if tag version is lower than current
+      shell: |
+        current_version=$(rpm -q --queryformat '%{VERSION}' {{ hostvars[inventory_hostname]['tags']['Service'] }})
+        if [ "$(printf '%s\n' $current_version {{ hostvars[inventory_hostname]['tags']['Version'] }} | sort -V | head -n1)" != "{{ hostvars[inventory_hostname]['tags']['Version'] }}" ]; then
+          yum downgrade -y {{ hostvars[inventory_hostname]['tags']['Service'] }}-{{ hostvars[inventory_hostname]['tags']['Version'] }}
+        fi
+      args:
+        executable: /bin/bash
+
+    - name: Start and enable the service
+      systemd:
+        name: "{{
+        'mariadb' if
+        'mariadb' in (hostvars[inventory_hostname]['tags']['Service'] | default(''))
+        else hostvars[inventory_hostname]['tags']['Service']
+      }}"
         state: started
         enabled: yes
+    
+    - name: Install Docker
+      yum:
+        name: docker
+        state: latest
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Run Docker container
+      docker_container:
+        name: "{{ hostvars[inventory_hostname]['tags']['Service'] }}"
+        image: "{{ hostvars[inventory_hostname]['tags']['DockerImage'] }}"
+        state: started
+        restart_policy: always
+        published_ports: >-
+          {{
+            ['3307:3306'] if 'mariadb' in (hostvars[inventory_hostname]['tags']['Service'] | default(''))
+            else ['8080:80']
+          }}
+
